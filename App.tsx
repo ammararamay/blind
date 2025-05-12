@@ -1,92 +1,91 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Alert } from 'react-native';
-import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
-import Tts from 'react-native-tts';
 
-// Custom type declaration to fix runOnJS (if needed later)
-declare global {
-  function runOnJS<T extends (...args: any[]) => any>(fn: T): (...args: Parameters<T>) => void;
-}
+import React, { useEffect, useRef, useState } from 'react';
+import { StyleSheet, Text, View, Alert } from 'react-native';
+import { Camera, useCameraDevice, useCameraPermission, Frame } from 'react-native-vision-camera';
+import Tts from 'react-native-tts';
+import { loadTensorflowModel } from 'react-native-fast-tflite';
 
 const App = () => {
+  const camera = useRef<Camera>(null);
   const device = useCameraDevice('back');
   const { hasPermission, requestPermission } = useCameraPermission();
-  const cameraRef = useRef<Camera>(null);
-  const [objectCount, setObjectCount] = useState(0);
-  const [isCameraReady, setIsCameraReady] = useState(false);
-  const lastSpokenRef = useRef<number>(Date.now()); // Track last spoken time to avoid overlap
+  const [detectedObjects, setDetectedObjects] = useState<string>('');
+  const [model, setModel] = useState<any>(null);
 
-  // Initialize Text-to-Speech with error handling
+  // Initialize TTS
   useEffect(() => {
-    const initTts = async () => {
-      try {
-        await Tts.setDefaultLanguage('en-US');
-        await Tts.setDefaultRate(0.5);
-        Tts.addEventListener('tts-finish', () => {
-          // Optional: Handle when speech finishes
-        });
-        console.log('TTS initialized successfully');
-      } catch (error) {
-        console.error('Failed to initialize TTS:', error);
-        Alert.alert('TTS Error', 'Failed to initialize text-to-speech.');
-      }
-    };
-
-    initTts();
+    Tts.setDefaultLanguage('en-US');
+    Tts.setDefaultRate(0.5);
+    Tts.addEventListener('tts-start', () => console.log('TTS started'));
+    Tts.addEventListener('tts-finish', () => console.log('TTS finished'));
 
     return () => {
-      Tts.stop();
+      Tts.removeAllListeners('tts-start');
       Tts.removeAllListeners('tts-finish');
     };
   }, []);
 
-  // Request camera permissions
+  // Load TensorFlow Lite model
   useEffect(() => {
-    if (!hasPermission) {
-      requestPermission().then((granted) => {
-        if (!granted) {
-          Alert.alert('Camera Permission', 'Camera access is required to use this app.');
+    (async () => {
+      try {
+        const loadedModel = await loadTensorflowModel(require('./assets/my_model.tflite'), 'android-gpu');
+        setModel(loadedModel);
+        Tts.speak('Model loaded successfully');
+      } catch (error) {
+        console.error('Error loading model:', error);
+        Tts.speak('Failed to load model');
+      }
+    })();
+  }, []);
+
+  // Request camera permission
+  useEffect(() => {
+    (async () => {
+      if (!hasPermission) {
+        const status = await requestPermission();
+        if (status !== 'granted') {
+          Alert.alert(
+            'Camera Permission Denied',
+            'Please enable camera access in settings to use this app.',
+          );
         }
-      });
-    }
+      }
+    })();
   }, [hasPermission, requestPermission]);
 
-  // Simulate object count update (without frame processor for now)
-  useEffect(() => {
-    if (isCameraReady) {
-      const interval = setInterval(() => {
-        const simulatedObjectCount = Math.floor(Math.random() * 5); // Simulate 0-4 objects
-        setObjectCount(simulatedObjectCount);
-      }, 2000); // Update every 2 seconds
+  // Frame processor for real-time object detection
+  const frameProcessor = useRef((frame: Frame) => {
+    if (!model) return;
 
-      return () => clearInterval(interval);
+    try {
+      const imageData = frame.toRGB(); // Adjust based on model input (e.g., resize if needed)
+      const results = model.run(imageData); // Run inference
+
+      // Log results to debug
+      console.log('Model inference results:', results);
+
+      // Parse results (adjust based on your model's output format)
+      const objects = results
+        .filter((result: any) => result.confidence > 0.5) // Example: Filter by confidence
+        .map((result: any) => result.label)
+        .join(', ');
+
+      if (objects && objects !== detectedObjects) {
+        setDetectedObjects(objects);
+        Tts.speak(`Detected: ${objects}`); // Use backticks for template literal
+      }
+    } catch (error) {
+      console.error('Frame processing error:', error);
     }
-  }, [isCameraReady]);
+  }).current;
 
-  // Speak the object count when it changes
-  useEffect(() => {
-    const now = Date.now();
-    if (now - lastSpokenRef.current >= 2000) { // Speak every 2 seconds
-      lastSpokenRef.current = now;
-      const message = objectCount === 0 ? 'No objects detected.' : `${objectCount} object${objectCount === 1 ? '' : 's'} detected.`;
-      Tts.speak(message).catch((error) => {
-        console.error('TTS speak error:', error);
-      });
-    }
-  }, [objectCount]);
-
-  if (!hasPermission) {
+  if (!device || !hasPermission) {
     return (
       <View style={styles.container}>
-        <Text>Camera permission is required to use this feature.</Text>
-      </View>
-    );
-  }
-
-  if (device == null) {
-    return (
-      <View style={styles.container}>
-        <Text>No camera device found.</Text>
+        <Text style={styles.text}>
+          {hasPermission ? 'Loading camera...' : 'No camera access'}
+        </Text>
       </View>
     );
   }
@@ -94,22 +93,16 @@ const App = () => {
   return (
     <View style={styles.container}>
       <Camera
-        ref={cameraRef}
+        ref={camera}
         style={StyleSheet.absoluteFill}
         device={device}
         isActive={true}
-        onInitialized={() => {
-          console.log('Camera initialized');
-          setIsCameraReady(true);
-        }}
-        onError={(error) => {
-          console.log('Camera error:', error);
-          Alert.alert('Camera Error', error.message);
-        }}
+        frameProcessor={frameProcessor}
+        frameProcessorFps={5}
       />
       <View style={styles.overlay}>
         <Text style={styles.overlayText}>
-          {objectCount === 0 ? 'No objects detected.' : `${objectCount} object${objectCount === 1 ? '' : 's'} detected.`}
+          {detectedObjects || 'Scanning...'}
         </Text>
       </View>
     </View>
@@ -121,6 +114,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000',
   },
+  text: {
+    color: '#fff',
+    fontSize: 18,
+    textAlign: 'center',
+  },
   overlay: {
     position: 'absolute',
     bottom: 50,
@@ -129,11 +127,10 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)',
     padding: 10,
     borderRadius: 5,
-    alignItems: 'center',
   },
   overlayText: {
     color: '#fff',
-    fontSize: 18,
+    fontSize: 16,
     textAlign: 'center',
   },
 });

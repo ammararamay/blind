@@ -12,6 +12,7 @@
   "dependencies": {
     "react": "19.0.0",
     "react-native": "^0.79.2",
+    "react-native-fast-tflite": "^1.6.1",
     "react-native-permissions": "^5.4.0",
     "react-native-reanimated": "^3.17.5",
     "react-native-tts": "^4.1.1",
